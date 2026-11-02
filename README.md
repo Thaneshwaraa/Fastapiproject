@@ -33,3 +33,9 @@ You can also start it with `uvicorn main:app --reload`.
 | DELETE | `/cars/{car_id}` | Delete a car |
 
 Data is stored in memory and resets when the server restarts.
+
+## Deploy
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Thaneshwaraa/Fastapiproject)
+
+The `render.yaml` blueprint installs the requirements and starts the app with uvicorn.
