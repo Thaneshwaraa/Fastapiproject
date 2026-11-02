@@ -78,6 +78,9 @@
     .btn-ghost:hover { background: var(--surface-2); }
     .btn-danger { background: var(--danger); color: #fff; }
     .btn svg { width: 16px; height: 16px; }
+    .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .user-badge { color: var(--muted); font-size: 13px; font-weight: 600; }
+    .form-error { color: var(--danger); font-size: 13px; font-weight: 600; margin-top: 12px; }
 
     /* Stats */
     .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
@@ -181,10 +184,14 @@
           <p>Manage your car collection</p>
         </div>
       </div>
-      <button class="btn btn-primary" id="add-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        Add car
-      </button>
+      <div class="header-actions">
+        <span class="user-badge" id="user-badge" hidden></span>
+        <button class="btn btn-ghost" id="auth-btn">Log in</button>
+        <button class="btn btn-primary" id="add-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add car
+        </button>
+      </div>
     </header>
 
     <section class="stats">
@@ -231,6 +238,24 @@
     </div>
   </div>
 
+  <div class="overlay" id="login-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <h2 id="login-title">Log in</h2>
+      <p class="sub">Log in to add, edit or delete cars.</p>
+      <form id="login-form">
+        <div class="form-grid">
+          <div class="full"><label for="l-user">Username</label><input class="field" id="l-user" autocomplete="username" required></div>
+          <div class="full"><label for="l-pass">Password</label><input class="field" id="l-pass" type="password" autocomplete="current-password" required></div>
+        </div>
+        <div class="form-error" id="login-error" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="login-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Log in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div class="toasts" id="toasts"></div>
 
   <script>
@@ -240,6 +265,47 @@
     let cars = [];
     let editingId = null;
     let confirmingId = null;
+    let afterLogin = null;
+    const loginOverlay = $("login-overlay"), loginForm = $("login-form");
+
+    function getToken() {
+      try { return localStorage.getItem("token"); } catch { return null; }
+    }
+
+    function setSession(token, username) {
+      try {
+        if (token) {
+          localStorage.setItem("token", token);
+          localStorage.setItem("username", username);
+        } else {
+          localStorage.removeItem("token");
+          localStorage.removeItem("username");
+        }
+      } catch {}
+      renderAuth(token ? username : null);
+    }
+
+    function renderAuth(username) {
+      $("user-badge").hidden = !username;
+      $("user-badge").textContent = username ? `Signed in as ${username}` : "";
+      $("auth-btn").textContent = username ? "Log out" : "Log in";
+    }
+
+    function openLogin(then = null) {
+      afterLogin = then;
+      loginForm.reset();
+      $("login-error").hidden = true;
+      loginOverlay.hidden = false;
+      setTimeout(() => $("l-user").focus(), 50);
+    }
+
+    function closeLogin() { loginOverlay.hidden = true; afterLogin = null; }
+
+    // Runs an action that needs a login, asking for one first if needed
+    function requireLogin(action) {
+      if (getToken()) action();
+      else openLogin(action);
+    }
 
     function colorFor(text) {
       let h = 0;
@@ -256,8 +322,15 @@
     }
 
     async function api(url, options = {}) {
-      const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
+      const headers = { "Content-Type": "application/json" };
+      const token = getToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(url, { headers, ...options });
       const data = await res.json();
+      if (res.status === 401 && url !== "/login") {
+        setSession(null);
+        openLogin();
+      }
       if (!res.ok) throw new Error(Array.isArray(data.detail) ? data.detail[0].msg : data.detail || "Request failed");
       return data;
     }
@@ -349,9 +422,9 @@
           actions.appendChild(wrap);
         } else {
           const edit = el("button", "btn btn-ghost", "Edit");
-          edit.onclick = () => openModal(car);
+          edit.onclick = () => requireLogin(() => openModal(car));
           const del = el("button", "btn btn-soft-danger", "Delete");
-          del.onclick = () => { confirmingId = car.id; render(); };
+          del.onclick = () => requireLogin(() => { confirmingId = car.id; render(); });
           actions.append(edit, del);
         }
 
@@ -416,13 +489,51 @@
       }
     });
 
-    $("add-btn").onclick = () => openModal();
+    loginForm.addEventListener("submit", async e => {
+      e.preventDefault();
+      const username = $("l-user").value.trim();
+      try {
+        const data = await api("/login", {
+          method: "POST",
+          body: JSON.stringify({ username, password: $("l-pass").value }),
+        });
+        setSession(data.access_token, data.username);
+        const next = afterLogin;
+        closeLogin();
+        toast(`Welcome, ${data.username}`);
+        if (next) next();
+      } catch (err) {
+        $("login-error").textContent = err.message;
+        $("login-error").hidden = false;
+      }
+    });
+
+    $("auth-btn").onclick = () => {
+      if (getToken()) {
+        setSession(null);
+        toast("Logged out");
+      } else {
+        openLogin();
+      }
+    };
+
+    $("add-btn").onclick = () => requireLogin(() => openModal());
     $("cancel-btn").onclick = closeModal;
+    $("login-cancel").onclick = closeLogin;
     overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
-    document.addEventListener("keydown", e => { if (e.key === "Escape" && !overlay.hidden) closeModal(); });
+    loginOverlay.addEventListener("click", e => { if (e.target === loginOverlay) closeLogin(); });
+    document.addEventListener("keydown", e => {
+      if (e.key !== "Escape") return;
+      if (!loginOverlay.hidden) closeLogin();
+      else if (!overlay.hidden) closeModal();
+    });
     $("search").addEventListener("input", render);
     $("sort").addEventListener("change", render);
 
+    // Check a saved token is still valid before showing the user as signed in
+    if (getToken()) {
+      api("/me").then(data => renderAuth(data.username)).catch(() => {});
+    }
     loadCars();
   </script>
 </body>

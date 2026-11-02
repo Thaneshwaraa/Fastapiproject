@@ -1,10 +1,44 @@
+import hmac
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+import jwt
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 app = FastAPI(title="Car Management API", description="API for managing car information", version="1.0.0", docs_url=None, redoc_url=None)
+
+# JWT settings (set these as environment variables when deploying)
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-secret-key-change-me-in-production")
+ALGORITHM = "HS256"
+TOKEN_MINUTES = 60
+DEMO_USERNAME = os.getenv("DEMO_USERNAME", "admin")
+DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "admin123")
+
+bearer = HTTPBearer(auto_error=False)
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+def create_token(username: str) -> str:
+    expires = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MINUTES)
+    return jwt.encode({"sub": username, "exp": expires}, SECRET_KEY, algorithm=ALGORITHM)
+
+def current_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:
+    unauthorized = HTTPException(status_code=401, detail="Please log in to make changes", headers={"WWW-Authenticate": "Bearer"})
+    if creds is None:
+        raise unauthorized
+    try:
+        payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired, please log in again", headers={"WWW-Authenticate": "Bearer"})
+    except jwt.InvalidTokenError:
+        raise unauthorized
+    return payload["sub"]
 
 class car(BaseModel):
     id: int
@@ -46,8 +80,20 @@ def find_car(car_id: int) -> car:
 def home():
     return FileResponse(Path(__file__).parent / "index.html")
 
+@app.post("/login")
+def login(body: LoginRequest):
+    valid_user = hmac.compare_digest(body.username, DEMO_USERNAME)
+    valid_password = hmac.compare_digest(body.password, DEMO_PASSWORD)
+    if not (valid_user and valid_password):
+        raise HTTPException(status_code=401, detail="Wrong username or password")
+    return {"access_token": create_token(body.username), "token_type": "bearer", "username": body.username}
+
+@app.get("/me")
+def me(user: str = Depends(current_user)):
+    return {"username": user}
+
 @app.post("/cars", status_code=201)
-def add_car(car: car):
+def add_car(car: car, user: str = Depends(current_user)):
     if car.id in cars_db:
         raise HTTPException(status_code=400, detail=f"Car with id {car.id} already exists")
     cars_db[car.id] = car
@@ -58,7 +104,7 @@ def get_car(car_id: int):
     return {"car": find_car(car_id)}
 
 @app.put("/cars/{car_id}")
-def update_car(car_id: int, car: car):
+def update_car(car_id: int, car: car, user: str = Depends(current_user)):
     find_car(car_id)
     if car.id != car_id:
         raise HTTPException(status_code=400, detail="Car id in body must match the URL")
@@ -66,7 +112,7 @@ def update_car(car_id: int, car: car):
     return {"message": "Car updated successfully", "car": car}
 
 @app.delete("/cars/{car_id}")
-def delete_car(car_id: int):
+def delete_car(car_id: int, user: str = Depends(current_user)):
     find_car(car_id)
     del cars_db[car_id]
     return {"message": "Car deleted successfully", "car_id": car_id}
@@ -76,7 +122,7 @@ def list_cars():
     return {"cars": list(cars_db.values())}
 
 @app.put("/cars/{car_id}/update_year")
-def update_car_year(car_id: int, year: int):
+def update_car_year(car_id: int, year: int, user: str = Depends(current_user)):
     find_car(car_id).year = year
     return {"message": "Car year updated successfully", "car_id": car_id, "new_year": year}
 

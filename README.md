@@ -21,16 +21,29 @@ Then open the web UI:
 
 You can also start it with `uvicorn main:app --reload`.
 
+## Login (JWT)
+
+Anyone can view cars, but adding, editing and deleting need a login.
+
+- Local demo login: username `admin`, password `admin123`
+- Change them with the `DEMO_USERNAME` and `DEMO_PASSWORD` environment variables
+- Set `SECRET_KEY` to a long random string in production (it signs the tokens)
+
+`POST /login` returns a token that lasts 60 minutes. Send it on protected requests as
+`Authorization: Bearer <token>`.
+
 ## Endpoints
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
+| POST | `/login` | Get a JWT token |
+| GET | `/me` | Current user (login required) |
 | GET | `/cars` | List all cars |
 | GET | `/cars/{car_id}` | Get one car |
-| POST | `/cars` | Add a car |
-| PUT | `/cars/{car_id}` | Replace a car |
-| PUT | `/cars/{car_id}/update_year?year=2024` | Update a car's year |
-| DELETE | `/cars/{car_id}` | Delete a car |
+| POST | `/cars` | Add a car (login required) |
+| PUT | `/cars/{car_id}` | Replace a car (login required) |
+| PUT | `/cars/{car_id}/update_year?year=2024` | Update a car's year (login required) |
+| DELETE | `/cars/{car_id}` | Delete a car (login required) |
 
 Data is stored in memory and resets when the server restarts.
 
