@@ -8,6 +8,8 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from sqlalchemy import Integer, String, create_engine, func, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 app = FastAPI(title="Car Management API", description="API for managing car information", version="1.0.0", docs_url=None, redoc_url=None)
 
@@ -18,11 +20,19 @@ TOKEN_MINUTES = 60
 DEMO_USERNAME = os.getenv("DEMO_USERNAME", "admin")
 DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "admin123")
 
+# Google sign-in settings
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+# Comma-separated list of Google emails that may sign in, e.g. "you@gmail.com,friend@gmail.com"
+ALLOWED_EMAILS = {e.strip().lower() for e in os.getenv("ALLOWED_EMAILS", "").split(",") if e.strip()}
+
 bearer = HTTPBearer(auto_error=False)
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
 
 def create_token(username: str) -> str:
     expires = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MINUTES)
@@ -46,34 +56,53 @@ class car(BaseModel):
     model: str
     year: int
 
-# In-memory storage (resets when the server restarts)
-cars_db: dict[int, car] = {
-    1: car(id=1, make="Toyota", model="Camry", year=2020),
-    2: car(id=2, make="Honda", model="Civic", year=2019),
-    3: car(id=3, make="Ford", model="Mustang", year=2021),
-    4: car(id=4, make="Tesla", model="Model 3", year=2023),
-    5: car(id=5, make="BMW", model="M3", year=2022),
-    6: car(id=6, make="Mercedes-Benz", model="C-Class", year=2021),
-    7: car(id=7, make="Audi", model="A4", year=2020),
-    8: car(id=8, make="Chevrolet", model="Corvette", year=2023),
-    9: car(id=9, make="Porsche", model="911 Carrera", year=2024),
-    10: car(id=10, make="Hyundai", model="Tucson", year=2022),
-    11: car(id=11, make="Kia", model="Seltos", year=2023),
-    12: car(id=12, make="Mahindra", model="Thar", year=2024),
-    13: car(id=13, make="Tata", model="Nexon", year=2023),
-    14: car(id=14, make="Maruti Suzuki", model="Swift", year=2024),
-    15: car(id=15, make="Nissan", model="GT-R", year=2019),
-    16: car(id=16, make="Toyota", model="Fortuner", year=2022),
-    17: car(id=17, make="Honda", model="City", year=2023),
-    18: car(id=18, make="Jeep", model="Wrangler", year=2021),
-    19: car(id=19, make="Volkswagen", model="Golf GTI", year=2020),
-    20: car(id=20, make="Lamborghini", model="Huracán", year=2023),
-}
+# Database: PostgreSQL via DATABASE_URL, e.g. postgresql://postgres:password@localhost:5432/cars
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/cars")
+# Use the psycopg 3 driver (Render gives URLs starting with postgres://)
+DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg://", 1)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
-def find_car(car_id: int) -> car:
-    if car_id not in cars_db:
+class Base(DeclarativeBase):
+    pass
+
+class CarRow(Base):
+    __tablename__ = "cars"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    make: Mapped[str] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(100))
+    year: Mapped[int] = mapped_column(Integer)
+
+SEED_CARS = [
+    ("Toyota", "Camry", 2020), ("Honda", "Civic", 2019), ("Ford", "Mustang", 2021),
+    ("Tesla", "Model 3", 2023), ("BMW", "M3", 2022), ("Mercedes-Benz", "C-Class", 2021),
+    ("Audi", "A4", 2020), ("Chevrolet", "Corvette", 2023), ("Porsche", "911 Carrera", 2024),
+    ("Hyundai", "Tucson", 2022), ("Kia", "Seltos", 2023), ("Mahindra", "Thar", 2024),
+    ("Tata", "Nexon", 2023), ("Maruti Suzuki", "Swift", 2024), ("Nissan", "GT-R", 2019),
+    ("Toyota", "Fortuner", 2022), ("Honda", "City", 2023), ("Jeep", "Wrangler", 2021),
+    ("Volkswagen", "Golf GTI", 2020), ("Lamborghini", "Huracán", 2023),
+]
+
+@app.on_event("startup")
+def init_db():
+    # Creates the table if missing and adds the sample cars to an empty table
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        if db.scalar(select(func.count()).select_from(CarRow)) == 0:
+            db.add_all(CarRow(id=i, make=m, model=mo, year=y) for i, (m, mo, y) in enumerate(SEED_CARS, start=1))
+            db.commit()
+
+def get_db():
+    with Session(engine) as db:
+        yield db
+
+def to_car(row: CarRow) -> car:
+    return car(id=row.id, make=row.make, model=row.model, year=row.year)
+
+def find_car(db: Session, car_id: int) -> CarRow:
+    row = db.get(CarRow, car_id)
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Car with id {car_id} not found")
-    return cars_db[car_id]
+    return row
 
 
 @app.get("/", include_in_schema=False)
@@ -88,42 +117,66 @@ def login(body: LoginRequest):
         raise HTTPException(status_code=401, detail="Wrong username or password")
     return {"access_token": create_token(body.username), "token_type": "bearer", "username": body.username}
 
+@app.get("/auth/config")
+def auth_config():
+    return {"google_client_id": GOOGLE_CLIENT_ID or None}
+
+@app.post("/auth/google")
+def google_login(body: GoogleLoginRequest):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google sign-in is not set up on this server")
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
+
+    try:
+        # Checks Google's signature, the expiry, and that the token was issued for our client ID
+        info = id_token.verify_oauth2_token(body.credential, google_requests.Request(), GOOGLE_CLIENT_ID)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Google sign-in, please try again")
+    email = (info.get("email") or "").lower()
+    if not info.get("email_verified") or email not in ALLOWED_EMAILS:
+        raise HTTPException(status_code=403, detail=f"{email or 'This account'} is not allowed to make changes")
+    return {"access_token": create_token(email), "token_type": "bearer", "username": email}
+
 @app.get("/me")
 def me(user: str = Depends(current_user)):
     return {"username": user}
 
 @app.post("/cars", status_code=201)
-def add_car(car: car, user: str = Depends(current_user)):
-    if car.id in cars_db:
+def add_car(car: car, user: str = Depends(current_user), db: Session = Depends(get_db)):
+    if db.get(CarRow, car.id) is not None:
         raise HTTPException(status_code=400, detail=f"Car with id {car.id} already exists")
-    cars_db[car.id] = car
+    db.add(CarRow(**car.model_dump()))
+    db.commit()
     return {"message": "Car added successfully", "car": car}
 
 @app.get("/cars/{car_id}")
-def get_car(car_id: int):
-    return {"car": find_car(car_id)}
+def get_car(car_id: int, db: Session = Depends(get_db)):
+    return {"car": to_car(find_car(db, car_id))}
 
 @app.put("/cars/{car_id}")
-def update_car(car_id: int, car: car, user: str = Depends(current_user)):
-    find_car(car_id)
+def update_car(car_id: int, car: car, user: str = Depends(current_user), db: Session = Depends(get_db)):
+    row = find_car(db, car_id)
     if car.id != car_id:
         raise HTTPException(status_code=400, detail="Car id in body must match the URL")
-    cars_db[car_id] = car
+    row.make, row.model, row.year = car.make, car.model, car.year
+    db.commit()
     return {"message": "Car updated successfully", "car": car}
 
 @app.delete("/cars/{car_id}")
-def delete_car(car_id: int, user: str = Depends(current_user)):
-    find_car(car_id)
-    del cars_db[car_id]
+def delete_car(car_id: int, user: str = Depends(current_user), db: Session = Depends(get_db)):
+    db.delete(find_car(db, car_id))
+    db.commit()
     return {"message": "Car deleted successfully", "car_id": car_id}
 
 @app.get("/cars")
-def list_cars():
-    return {"cars": list(cars_db.values())}
+def list_cars(db: Session = Depends(get_db)):
+    return {"cars": [to_car(r) for r in db.scalars(select(CarRow).order_by(CarRow.id))]}
 
 @app.put("/cars/{car_id}/update_year")
-def update_car_year(car_id: int, year: int, user: str = Depends(current_user)):
-    find_car(car_id).year = year
+def update_car_year(car_id: int, year: int, user: str = Depends(current_user), db: Session = Depends(get_db)):
+    find_car(db, car_id).year = year
+    db.commit()
     return {"message": "Car year updated successfully", "car_id": car_id, "new_year": year}
 
 

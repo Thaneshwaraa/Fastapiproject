@@ -242,6 +242,12 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
       <h2 id="login-title">Log in</h2>
       <p class="sub">Log in to add, edit or delete cars.</p>
+      <div id="google-area" hidden>
+        <div id="google-btn" style="display:flex;justify-content:center;min-height:44px"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin:14px 0;opacity:.6;font-size:13px">
+          <hr style="flex:1;border:0;border-top:1px solid currentColor">or<hr style="flex:1;border:0;border-top:1px solid currentColor">
+        </div>
+      </div>
       <form id="login-form">
         <div class="form-grid">
           <div class="full"><label for="l-user">Username</label><input class="field" id="l-user" autocomplete="username" required></div>
@@ -327,7 +333,7 @@
       if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch(url, { headers, ...options });
       const data = await res.json();
-      if (res.status === 401 && url !== "/login") {
+      if (res.status === 401 && url !== "/login" && url !== "/auth/google") {
         setSession(null);
         openLogin();
       }
@@ -489,14 +495,9 @@
       }
     });
 
-    loginForm.addEventListener("submit", async e => {
-      e.preventDefault();
-      const username = $("l-user").value.trim();
+    async function finishLogin(url, payload) {
       try {
-        const data = await api("/login", {
-          method: "POST",
-          body: JSON.stringify({ username, password: $("l-pass").value }),
-        });
+        const data = await api(url, { method: "POST", body: JSON.stringify(payload) });
         setSession(data.access_token, data.username);
         const next = afterLogin;
         closeLogin();
@@ -506,7 +507,33 @@
         $("login-error").textContent = err.message;
         $("login-error").hidden = false;
       }
+    }
+
+    loginForm.addEventListener("submit", e => {
+      e.preventDefault();
+      finishLogin("/login", { username: $("l-user").value.trim(), password: $("l-pass").value });
     });
+
+    // Google sign-in: only shown when the server has GOOGLE_CLIENT_ID set
+    async function setupGoogle() {
+      try {
+        const { google_client_id } = await api("/auth/config");
+        if (!google_client_id) return;
+        const script = document.createElement("script");
+        script.src = "https://accounts.google.com/gsi/client";
+        script.async = true;
+        script.onload = () => {
+          google.accounts.id.initialize({
+            client_id: google_client_id,
+            callback: resp => finishLogin("/auth/google", { credential: resp.credential }),
+          });
+          google.accounts.id.renderButton($("google-btn"), { theme: "outline", size: "large", text: "signin_with", shape: "pill" });
+          $("google-area").hidden = false;
+        };
+        document.head.appendChild(script);
+      } catch {}
+    }
+    setupGoogle();
 
     $("auth-btn").onclick = () => {
       if (getToken()) {

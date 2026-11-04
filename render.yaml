@@ -14,3 +14,9 @@ services:
         value: admin
       - key: DEMO_PASSWORD
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: ALLOWED_EMAILS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
